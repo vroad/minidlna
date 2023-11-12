@@ -353,6 +353,16 @@ GetAudioMetadata(const char *path, const char *name)
 		strcpy(type, "pcm");
 		m.mime = strdup("audio/L16");
 	}
+	else if( ends_with(path, ".dsf") )
+	{
+		strcpy(type, "dsf");
+		m.mime = strdup("audio/x-dsd");
+	}
+	else if( ends_with(path, ".dff") )
+	{
+		strcpy(type, "dff");
+		m.mime = strdup("audio/x-dsd");
+	}
 	else
 	{
 		DPRINTF(E_WARN, L_METADATA, "Unhandled file extension on %s\n", path);
@@ -492,7 +502,7 @@ GetAudioMetadata(const char *path, const char *name)
 }
 
 /* For libjpeg error handling */
-jmp_buf setjmp_buffer;
+static jmp_buf setjmp_buffer;
 static void
 libjpeg_error_handler(j_common_ptr cinfo)
 {
@@ -852,6 +862,10 @@ GetVideoMetadata(const char *path, const char *name)
 			xasprintf(&m.mime, "video/x-matroska");
 		else if( strcmp(ctx->iformat->name, "flv") == 0 )
 			xasprintf(&m.mime, "video/x-flv");
+		else if( strcmp(ctx->iformat->name, "rm") == 0 )
+			xasprintf(&m.mime, "application/vnd.rn-realmedia");
+		else if( strcmp(ctx->iformat->name, "rmvb") == 0 )
+			xasprintf(&m.mime, "application/vnd.rn-realmedia-vbr");
 		if( m.mime )
 			goto video_no_dlna;
 
@@ -1528,6 +1542,10 @@ video_no_dlna:
 			xasprintf(&m.mime, "video/x-matroska");
 		else if( strcmp(ctx->iformat->name, "flv") == 0 )
 			xasprintf(&m.mime, "video/x-flv");
+		else if( strcmp(ctx->iformat->name, "rm") == 0 )
+			xasprintf(&m.mime, "application/vnd.rn-realmedia");
+		else if( strcmp(ctx->iformat->name, "rmvb") == 0 )
+			xasprintf(&m.mime, "application/vnd.rn-realmedia-vbr");
 		else
 			DPRINTF(E_WARN, L_METADATA, "%s: Unhandled format: %s\n", path, ctx->iformat->name);
 	}

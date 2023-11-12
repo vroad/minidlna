@@ -659,6 +659,10 @@ parse_sort_criteria(char *sortCriteria, int *error)
 		{
 			strcatf(&str, "d.ALBUM");
 		}
+		else if( strcasecmp(item, "path") == 0 )
+		{
+			strcatf(&str, "d.PATH");
+		}
 		else
 		{
 			DPRINTF(E_ERROR, L_HTTP, "Unhandled SortCriteria [%s]\n", item);
@@ -809,7 +813,7 @@ get_child_count(const char *object, struct magic_container_s *magic)
 	else if (magic && magic->objectid && *(magic->objectid))
 		ret = sql_get_int_field(db, "SELECT count(*) from OBJECTS where PARENT_ID = '%s';", *(magic->objectid));
 	else
-		ret = sql_get_int_field(db, "SELECT count(*) from OBJECTS where PARENT_ID = '%s';", object);
+		ret = sql_get_int_field(db, "SELECT count(*) from OBJECTS where PARENT_ID = '%q';", object);
 
 	return (ret > 0) ? ret : 0;
 }
@@ -832,6 +836,9 @@ object_exists(const char *object)
 static int
 callback(void *args, int argc, char **argv, char **azColName)
 {
+	(void)args;
+	(void)argc;
+	(void)azColName;
 	struct Response *passed_args = (struct Response *)args;
 	char *id = argv[0], *parent = argv[1], *refID = argv[2], *detailID = argv[3], *class = argv[4], *size = argv[5], *title = argv[6],
 	     *duration = argv[7], *bitrate = argv[8], *sampleFrequency = argv[9], *artist = argv[10], *album = argv[11],
@@ -858,15 +865,17 @@ callback(void *args, int argc, char **argv, char **azColName)
 			}
 			else
 			{
-				DPRINTF(E_ERROR, L_HTTP, "UPnP SOAP response was too big, and realloc failed!\n");
-				return -1;
+				DPRINTF(E_ERROR, L_HTTP, "UPnP SOAP response truncated, realloc failed\n");
+				passed_args->flags |= RESPONSE_TRUNCATED;
+				return 1;
 			}
 #if MAX_RESPONSE_SIZE > 0
 		}
 		else
 		{
-			DPRINTF(E_ERROR, L_HTTP, "UPnP SOAP response cut short, to not exceed the max response size [%lld]!\n", (long long int)MAX_RESPONSE_SIZE);
-			return -1;
+			DPRINTF(E_ERROR, L_HTTP, "UPnP SOAP response would exceed the max response size [%lld], truncating\n", (long long int)MAX_RESPONSE_SIZE);
+			passed_args->flags |= RESPONSE_TRUNCATED;
+			return 1;
 		}
 #endif
 	}
@@ -1023,6 +1032,9 @@ callback(void *args, int argc, char **argv, char **azColName)
 				** so HH:MM:SS. But Kodi seems to be the only user of this tag, and it only works with a
 				** raw seconds value.
 				** If Kodi gets fixed, we can use duration_str(sec * 1000) here */
+				if( passed_args->flags & FLAG_CONVERT_MS ) {
+					sec *= 1000;
+				}
 				if( passed_args->filter & FILTER_UPNP_LASTPLAYBACKPOSITION )
 					ret = strcatf(str, "&lt;upnp:lastPlaybackPosition&gt;%d&lt;/upnp:lastPlaybackPosition&gt;",
 					              sec);
@@ -1286,6 +1298,7 @@ callback(void *args, int argc, char **argv, char **azColName)
 static void
 BrowseContentDirectory(struct upnphttp * h, const char * action)
 {
+	(void)action;
 	static const char resp0[] =
 			"<u:BrowseResponse "
 			"xmlns:u=\"urn:schemas-upnp-org:service:ContentDirectory:1\">"
@@ -1475,12 +1488,19 @@ BrowseContentDirectory(struct upnphttp * h, const char * action)
 		DPRINTF(E_DEBUG, L_HTTP, "Browse SQL: %s\n", sql);
 		ret = sqlite3_exec(db, sql, callback, (void *) &args, &zErrMsg);
 	}
-	if( (ret != SQLITE_OK) && (zErrMsg != NULL) )
+	if( ret != SQLITE_OK )
 	{
-		DPRINTF(E_WARN, L_HTTP, "SQL error: %s\nBAD SQL: %s\n", zErrMsg, sql);
-		sqlite3_free(zErrMsg);
-		SoapError(h, 709, "Unsupported or invalid sort criteria");
-		goto browse_error;
+		if( args.flags & RESPONSE_TRUNCATED )
+		{
+			sqlite3_free(zErrMsg);
+		}
+		else
+		{
+			DPRINTF(E_WARN, L_HTTP, "SQL error: %s\nBAD SQL: %s\n", zErrMsg, sql);
+			sqlite3_free(zErrMsg);
+			SoapError(h, 709, "Unsupported or invalid sort criteria");
+			goto browse_error;
+		}
 	}
 	sqlite3_free(sql);
 	/* Does the object even exist? */
@@ -1801,6 +1821,7 @@ parse_search_criteria(const char *str, char *sep)
 static void
 SearchContentDirectory(struct upnphttp * h, const char * action)
 {
+	(void)action;
 	static const char resp0[] =
 			"<u:SearchResponse "
 			"xmlns:u=\"urn:schemas-upnp-org:service:ContentDirectory:1\">"
@@ -1933,9 +1954,10 @@ SearchContentDirectory(struct upnphttp * h, const char * action)
 	                      orderBy, StartingIndex, RequestedCount);
 	DPRINTF(E_DEBUG, L_HTTP, "Search SQL: %s\n", sql);
 	ret = sqlite3_exec(db, sql, callback, (void *) &args, &zErrMsg);
-	if( (ret != SQLITE_OK) && (zErrMsg != NULL) )
+	if( ret != SQLITE_OK )
 	{
-		DPRINTF(E_WARN, L_HTTP, "SQL error: %s\nBAD SQL: %s\n", zErrMsg, sql);
+		if( !(args.flags & RESPONSE_TRUNCATED) )
+			DPRINTF(E_WARN, L_HTTP, "SQL error: %s\nBAD SQL: %s\n", zErrMsg, sql);
 		sqlite3_free(zErrMsg);
 	}
 	sqlite3_free(sql);
@@ -2046,6 +2068,7 @@ static void _kodi_decode(char *str)
 		case '/':
 			if (!str[1])
 				*str = '\0';
+			/* fall through */
 		default:
 			str++;
 			break;
@@ -2065,6 +2088,7 @@ static int duration_sec(const char *str)
 
 static void UpdateObject(struct upnphttp * h, const char * action)
 {
+	(void)action;
 	static const char resp[] =
 	    "<u:UpdateObjectResponse"
 	    " xmlns:u=\"urn:schemas-upnp-org:service:ContentDirectory:1\">"
@@ -2119,7 +2143,11 @@ static void UpdateObject(struct upnphttp * h, const char * action)
 		}
 		else if (strcmp(tag, "upnp:lastPlaybackPosition") == 0)
 		{
+
 			int sec = duration_sec(new);
+			if( h->req_client && (h->req_client->type->flags & FLAG_CONVERT_MS) ) {
+				sec /= 1000;
+			}
 			if (sec < 30)
 				sec = 0;
 			else
@@ -2145,6 +2173,7 @@ static void UpdateObject(struct upnphttp * h, const char * action)
 static void
 SamsungGetFeatureList(struct upnphttp * h, const char * action)
 {
+	(void)action;
 	static const char resp[] =
 		"<u:X_GetFeatureListResponse xmlns:u=\"urn:schemas-upnp-org:service:ContentDirectory:1\">"
 		"<FeatureList>"
@@ -2194,6 +2223,7 @@ SamsungGetFeatureList(struct upnphttp * h, const char * action)
 static void
 SamsungSetBookmark(struct upnphttp * h, const char * action)
 {
+	(void)action;
 	static const char resp[] =
 	    "<u:X_SetBookmarkResponse"
 	    " xmlns:u=\"urn:schemas-upnp-org:service:ContentDirectory:1\">"
@@ -2216,6 +2246,9 @@ SamsungSetBookmark(struct upnphttp * h, const char * action)
 		in_magic_container(ObjectID, 0, &rid);
 		detailID = sql_get_int64_field(db, "SELECT DETAIL_ID from OBJECTS where OBJECT_ID = '%q'", rid);
 
+		if( h->req_client && (h->req_client->type->flags & FLAG_CONVERT_MS) ) {
+			sec /= 1000;
+		}
 		if ( sec < 30 )
 			sec = 0;
 		ret = sql_exec(db, "INSERT OR IGNORE into BOOKMARKS (ID, SEC)"

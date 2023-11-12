@@ -273,6 +273,11 @@ ParseHttpHeaders(struct upnphttp * h)
 				p = colon + 1;
 				while(isspace(*p))
 					p++;
+				n = 0;
+				while(p[n] >= ' ')
+					n++;
+				h->req_Host = p;
+				h->req_HostLen = n;
 				for(n = 0; n < n_lan_addr; n++)
 				{
 					for(i = 0; lan_addr[n].str[i]; i++)
@@ -420,14 +425,14 @@ next_header:
 			return;
 		line += 2;
 	}
-	if( h->reqflags & FLAG_CHUNKED )
+	if (h->reqflags & FLAG_CHUNKED)
 	{
 		char *endptr;
 		h->req_chunklen = -1;
-		if( h->req_buflen <= h->req_contentoff )
+		if (h->req_buflen <= h->req_contentoff)
 			return;
 		while( (line < (h->req_buf + h->req_buflen)) &&
-		       (h->req_chunklen = strtol(line, &endptr, 16)) &&
+		       ((h->req_chunklen = strtol(line, &endptr, 16)) > 0) &&
 		       (endptr != line) )
 		{
 			endptr = strstr(endptr, "\r\n");
@@ -623,7 +628,7 @@ SendResp_presentation(struct upnphttp * h)
 	v = sql_get_int_field(db, "SELECT count(*) from DETAILS where MIME glob 'v*'");
 	p = sql_get_int_field(db, "SELECT count(*) from DETAILS where MIME glob 'i*'");
 	strcatf(&str,
-		"<HTML><HEAD><TITLE>" SERVER_NAME " " MINIDLNA_VERSION "</TITLE></HEAD>"
+		"<HTML><HEAD><TITLE>" SERVER_NAME " " MINIDLNA_VERSION "</TITLE><meta http-equiv=\"refresh\" content=\"20\"></HEAD>"
 		"<BODY><div style=\"text-align: center\">"
 		"<h2>" SERVER_NAME " status</h2></div>");
 
@@ -699,7 +704,7 @@ ProcessHTTPPOST_upnphttp(struct upnphttp * h)
 static int
 check_event(struct upnphttp *h)
 {
-	enum event_type type;
+	enum event_type type = E_INVALID;
 
 	if (h->req_Callback)
 	{
@@ -707,7 +712,6 @@ check_event(struct upnphttp *h)
 		{
 			BuildResp2_upnphttp(h, 400, "Bad Request",
 				            "<html><body>Bad request</body></html>", 37);
-			type = E_INVALID;
 		}
 		else if (strncmp(h->req_Callback, "http://", 7) != 0 ||
 		         strncmp(h->req_NT, "upnp:event", h->req_NTLen) != 0)
@@ -716,10 +720,30 @@ check_event(struct upnphttp *h)
 			 * If CALLBACK header is missing or does not contain a valid HTTP URL,
 			 * the publisher must respond with HTTP error 412 Precondition Failed*/
 			BuildResp2_upnphttp(h, 412, "Precondition Failed", 0, 0);
-			type = E_INVALID;
 		}
 		else
-			type = E_SUBSCRIBE;
+		{
+			/* Make sure callback URL points to the originating IP */
+			struct in_addr addr;
+			char addrstr[16];
+			int i = 0;
+			const char *p = h->req_Callback + 7;
+			while (!strchr("/:>", *p) && i < sizeof(addrstr) - 1 &&
+			       p < (h->req_Callback + h->req_CallbackLen))
+			{
+				addrstr[i++] = *(p++);
+			}
+			addrstr[i] = '\0';
+
+			if (inet_pton(AF_INET, addrstr, &addr) <= 0 ||
+			    memcmp(&addr, &h->clientaddr, sizeof(struct in_addr)))
+			{
+				DPRINTF(E_ERROR, L_HTTP, "Bad callback IP (%s)\n", addrstr);
+				BuildResp2_upnphttp(h, 412, "Precondition Failed", 0, 0);
+			}
+			else
+				type = E_SUBSCRIBE;
+		}
 	}
 	else if (h->req_SID)
 	{
@@ -728,7 +752,6 @@ check_event(struct upnphttp *h)
 		{
 			BuildResp2_upnphttp(h, 400, "Bad Request",
 				            "<html><body>Bad request</body></html>", 37);
-			type = E_INVALID;
 		}
 		else
 			type = E_RENEW;
@@ -736,7 +759,6 @@ check_event(struct upnphttp *h)
 	else
 	{
 		BuildResp2_upnphttp(h, 412, "Precondition Failed", 0, 0);
-		type = E_INVALID;
 	}
 
 	return type;
@@ -871,7 +893,7 @@ ProcessHttpQuery_upnphttp(struct upnphttp * h)
 		char *chunkstart, *chunk, *endptr, *endbuf;
 		chunk = endbuf = chunkstart = h->req_buf + h->req_contentoff;
 
-		while( (h->req_chunklen = strtol(chunk, &endptr, 16)) && (endptr != chunk) )
+		while ((h->req_chunklen = strtol(chunk, &endptr, 16)) > 0 && (endptr != chunk) )
 		{
 			endptr = strstr(endptr, "\r\n");
 			if (!endptr)
@@ -892,6 +914,32 @@ ProcessHttpQuery_upnphttp(struct upnphttp * h)
 	}
 
 	DPRINTF(E_DEBUG, L_HTTP, "HTTP REQUEST: %.*s\n", h->req_buflen, h->req_buf);
+	if(h->req_Host && h->req_HostLen > 0) {
+		const char *port = memchr(h->req_Host, ':', h->req_HostLen);
+		size_t ip_sz = port ? (port - h->req_Host) : h->req_HostLen;
+		struct in_addr addr;
+		char ip_buf[16];
+		DPRINTF(E_MAXDEBUG, L_HTTP, "Host: %.*s\n", h->req_HostLen, h->req_Host);
+		if (port) {
+			const char *ptr = port + 1;
+			for (i = ip_sz + 2; i < h->req_HostLen; i++) {
+				if (*ptr > '9' || *ptr < '0')
+					break;
+				ptr++;
+			}
+			if (i != h->req_HostLen || atoi(port + 1) > 65535) {
+				DPRINTF(E_ERROR, L_HTTP, "DNS rebinding attack suspected (Host: %.*s)\n", h->req_HostLen, h->req_Host);
+				Send400(h);
+				return;
+			}
+		}
+		strncpyt(ip_buf, h->req_Host, MIN(ip_sz + 1, sizeof(ip_buf)));
+		if (ip_sz >= sizeof(ip_buf) || inet_pton(AF_INET, ip_buf, &addr) <= 0 || !addr.s_addr) {
+			DPRINTF(E_ERROR, L_HTTP, "DNS rebinding attack suspected (Host: %.*s)\n", h->req_HostLen, h->req_Host);
+			Send400(h);
+			return;
+		}
+	}
 	if(strcmp("POST", HttpCommand) == 0)
 	{
 		h->req_command = EPost;
@@ -1062,7 +1110,7 @@ Process_upnphttp(struct event *ev)
 		}
 		else if(n==0)
 		{
-			DPRINTF(E_WARN, L_HTTP, "HTTP Connection closed unexpectedly\n");
+			DPRINTF(E_DEBUG, L_HTTP, "HTTP Connection closed unexpectedly\n");
 			h->state = 100;
 		}
 		else
@@ -1108,7 +1156,7 @@ Process_upnphttp(struct event *ev)
 		}
 		else if(n == 0)
 		{
-			DPRINTF(E_WARN, L_HTTP, "HTTP Connection closed unexpectedly\n");
+			DPRINTF(E_DEBUG, L_HTTP, "HTTP Connection closed unexpectedly\n");
 			h->state = 100;
 		}
 		else
@@ -1289,6 +1337,10 @@ send_file(struct upnphttp * h, int sendfd, off_t offset, off_t end_offset)
 				else if( errno != EAGAIN )
 					break;
 			}
+			else if( ret == 0 )
+			{
+				break;  /* Premature end of file */
+			}
 			else
 			{
 				//DPRINTF(E_DEBUG, L_HTTP, "sent %lld bytes to %d. offset is now %lld.\n", ret, h->socket, offset);
@@ -1308,6 +1360,10 @@ send_file(struct upnphttp * h, int sendfd, off_t offset, off_t end_offset)
 				continue;
 			else
 				break;
+		}
+		else if( ret == 0 )
+		{
+			break;  /* premature end of file */
 		}
 		ret = write(h->ev.fd, buf, ret);
 		if( ret == -1 ) {
@@ -1624,7 +1680,7 @@ SendResp_resizedimg(struct upnphttp * h, char * object)
 	char *resolution = NULL;
 	char *key, *val;
 	char *saveptr, *item = NULL;
-	int rotate;
+	int rotate = 0;
 	int pixw = 0, pixh = 0;
 	long long id;
 	int rows=0, chunked, ret;
@@ -1644,7 +1700,8 @@ SendResp_resizedimg(struct upnphttp * h, char * object)
 	{
 		file_path = result[3];
 		resolution = result[4];
-		rotate = result[5] ? atoi(result[5]) : 0;
+                if (result[5])
+			rotate = atoi(result[5]);
 	}
 	if( !file_path || !resolution || (access(file_path, F_OK) != 0) )
 	{
@@ -1727,7 +1784,7 @@ SendResp_resizedimg(struct upnphttp * h, char * object)
 	if( ret != 2 )
 	{
 		Send500(h);
-		return;
+		goto resized_error;
 	}
 	/* Figure out the best destination resolution we can use */
 	dstw = width;
