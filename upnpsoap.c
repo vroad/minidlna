@@ -1291,6 +1291,7 @@ callback(void *args, int argc, char **argv, char **azColName)
 		}
 		ret = strcatf(str, "&lt;/container&gt;");
 	}
+	DPRINTF(E_DEBUG, L_HTTP, "response:\n%s\n", str);
 
 	return 0;
 }

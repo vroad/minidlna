@@ -1996,6 +1996,7 @@ SendResp_dlnafile(struct upnphttp *h, char *object)
 #endif
 
 	DPRINTF(E_INFO, L_HTTP, "Serving DetailID: %lld [%s]\n", (long long)id, last_file.path);
+	DPRINTF(E_DEBUG, L_HTTP, "mime: [%s]\n", last_file.mime);
 
 	if( h->reqflags & FLAG_XFERSTREAMING )
 	{
