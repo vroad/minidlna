@@ -1167,6 +1167,19 @@ callback(void *args, int argc, char **argv, char **azColName)
 						        resolution, dlna_buf, mime, detailID, ext, passed_args);
 					}
 					break;
+				case EPanasonic:
+					DPRINTF(E_DEBUG, L_HTTP, "Changing response for Panasonic TV\n");
+					if( dlna_pn &&
+					    (strncmp(dlna_pn, "MPEG_TS_HD_NA", 13) == 0 ||
+					     strncmp(dlna_pn, "MPEG_TS_SD_NA", 13) == 0 ||
+					     strncmp(dlna_pn, "AVC_TS_MP_HD_AC3", 16) == 0 ||
+					     strncmp(dlna_pn, "AVC_TS_HP_HD_AC3", 16) == 0))
+					{
+						sprintf(dlna_buf, "DLNA.ORG_PN=%s;DLNA.ORG_OP=01;DLNA.ORG_CI=1", "MPEG_TS_NTSC");
+						add_res(size, duration, bitrate, sampleFrequency, nrAudioChannels,
+						        resolution, dlna_buf, mime, detailID, ext, passed_args);
+					}
+					break;
 				case ESamsungSeriesCDE:
 				case ELGDevice:
 				case ELGNetCastDevice:

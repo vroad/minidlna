@@ -934,9 +934,10 @@ GetVideoMetadata(const char *path, const char *name)
 						default:
 							break;
 					} */
-					DPRINTF(E_DEBUG, L_METADATA, "Force video/vnd.dlna.mpeg-tts MIME for (%s)\n",
+					DPRINTF(E_DEBUG, L_METADATA, "Force MPEG_TS_NTSC and video/vnd.dlna.mpeg-tts MIME for (%s)\n",
 						basepath);
 					xasprintf(&m.mime, "video/vnd.dlna.mpeg-tts");
+					xasprintf(&m.dlna_pn, "MPEG_TS_NTSC");
 				}
 				else if( strcmp(ctx->iformat->name, "mpeg") == 0 )
 				{
