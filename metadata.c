@@ -920,7 +920,7 @@ GetVideoMetadata(const char *path, const char *name)
 						free(m.dlna_pn);
 						m.dlna_pn = NULL;
 					}
-					switch( ts_timestamp )
+					/* switch( ts_timestamp )
 					{
 						case NONE:
 							xasprintf(&m.mime, "video/mpeg");
@@ -933,7 +933,10 @@ GetVideoMetadata(const char *path, const char *name)
 							xasprintf(&m.mime, "video/vnd.dlna.mpeg-tts");
 						default:
 							break;
-					}
+					} */
+					DPRINTF(E_DEBUG, L_METADATA, "Force video/vnd.dlna.mpeg-tts MIME for (%s)\n",
+						basepath);
+					xasprintf(&m.mime, "video/vnd.dlna.mpeg-tts");
 				}
 				else if( strcmp(ctx->iformat->name, "mpeg") == 0 )
 				{
